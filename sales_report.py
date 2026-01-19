@@ -120,6 +120,7 @@ if selected_sheet:
 
         # Чистка
         df = df.dropna(subset=['Manager', 'Date'])
+        df['Manager'] = df['Manager'].astype(str) # Fix mixed definition
         df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
         df = df.dropna(subset=['Date'])
         for k in ['Leads', 'Orders', 'Revenue']:
