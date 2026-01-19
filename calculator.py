@@ -13,7 +13,7 @@ else:
 
 # --- Page Configuration ---
 st.set_page_config(
-    page_title="Калькулятор Цветочного Комбо",
+    page_title="Калькулятор Накрутки",
     page_icon="🌸",
     layout="wide"
 )
@@ -24,10 +24,19 @@ GID = "680482883"
 EXPORT_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=xlsx&gid={GID}"
 
 # --- Data Loading ---
-@st.cache_data
+import requests
+import io
+
+# --- Data Loading ---
+@st.cache_data(ttl=600)  # Cache for 10 minutes
 def load_data():
     try:
-        df = pd.read_excel(EXPORT_URL)
+        # Use requests to fetch data, which determines the file type
+        response = requests.get(EXPORT_URL, timeout=10)
+        response.raise_for_status() # Raise error for 400/500 codes
+        
+        # Load directly from bytes
+        df = pd.read_excel(io.BytesIO(response.content))
         
         # Verify columns exist
         required_columns = ["Название", "Категория", "Себестоимость", "Цена_Базовая"]
@@ -121,14 +130,16 @@ if st.session_state.cart:
     cart_df = pd.DataFrame(st.session_state.cart)
     
     # Display table with formatting
-    display_df = cart_df[["Название", "Количество", "Себестоимость_шт", "Сумма_Себестоимости"]].copy()
+    display_df = cart_df[["Название", "Количество", "Себестоимость_шт", "Сумма_Себестоимости", "Сумма_Базовая"]].copy()
     
     st.dataframe(
         display_df,
         column_config={
             "Себестоимость_шт": st.column_config.NumberColumn(format="%.0f ₸"),
-            "Сумма_Себестоимости": st.column_config.NumberColumn(format="%.0f ₸"),
+            "Сумма_Себестоимости": st.column_config.NumberColumn(label="Сумма Себ.", format="%.0f ₸"),
+            "Сумма_Базовая": st.column_config.NumberColumn(label="Сумма Баз. Цена", format="%.0f ₸"),
         },
+        use_container_width=True,
         hide_index=True
     )
     
@@ -137,72 +148,93 @@ if st.session_state.cart:
         st.rerun()
 
     total_material_cost = cart_df["Сумма_Себестоимости"].sum()
-    total_base_price_suggestion = cart_df["Сумма_Базовая"].sum()
+    total_base_price_sum = cart_df["Сумма_Базовая"].sum()
     
-    st.markdown(f"#### ИТОГО СЕБЕСТОИМОСТЬ МАТЕРИАЛОВ: :blue[{total_material_cost:,.0f} ₸]".replace(",", " "))
+    st.markdown(f"#### ИТОГО СЕБЕСТОИМОСТЬ: :red[{total_material_cost:,.0f} ₸]".replace(",", " "))
     
     st.divider()
     
-    # --- Section 4: Final Calculation ---
-    st.subheader("3. Финальный Расчет")
+    # --- Section 3: Final Calculation ---
+    st.subheader("3. Финальный Расчет и Накрутка")
     
-    final_price = st.number_input(
-        "ИТОГОВАЯ ЦЕНА ПРОДАЖИ КОМБО (₸)",
-        value=float(total_base_price_suggestion),
-        step=100.0,
-        format="%.0f"
-    )
+    col_calc1, col_calc2 = st.columns(2)
     
-    # Markup Calculation
-    markup = 0.0
-    if total_material_cost > 0:
-        markup = final_price / total_material_cost
-    
-    st.caption(f"Наценка (Markup): **{markup:.2f}x** от себестоимости материалов")
+    with col_calc1:
+        target_markup = st.slider("Желаемая накрутка (от себестоимости)", min_value=1.5, max_value=4.0, value=2.5, step=0.1)
+        suggested_price = total_material_cost * target_markup
+        st.caption(f"Рекомендуемая цена (Себ. x {target_markup:.1f}): **{suggested_price:,.0f} ₸**")
 
+    with col_calc2:
+        final_price = st.number_input(
+            "ИТОГОВАЯ ЦЕНА ПРОДАЖИ (₸)",
+            value=float(suggested_price) if 'suggested_price' in locals() else float(total_base_price_sum), 
+            step=100.0,
+            format="%.0f"
+        )
+    
     # Calculations
     commission_cost = final_price * (total_commission_pct / 100)
     total_expenses = total_material_cost + commission_cost
     net_profit = final_price - total_expenses
     
-    # Metrics
-    st.markdown("### Результаты")
-    m1, m2, m3, m4 = st.columns(4)
+    # Markup Metrics
+    gross_markup = 0.0
+    net_markup = 0.0
     
-    m1.metric("💵 Выручка", f"{final_price:,.0f} ₸".replace(",", " "))
-    m2.metric("📉 Расходы", f"{total_expenses:,.0f} ₸".replace(",", " "), help="Материалы + Комиссии", delta_color="inverse")
+    if total_material_cost > 0:
+        gross_markup = final_price / total_material_cost
+        
+    if total_expenses > 0:
+        net_markup = final_price / total_expenses
+
+    # Metrics Display
+    st.markdown("### 📊 Результаты")
     
+    # Row 1: Financials
+    r1_c1, r1_c2, r1_c3 = st.columns(3)
+    r1_c1.metric("💵 Выручка", f"{final_price:,.0f} ₸".replace(",", " "))
+    r1_c2.metric("📉 Расходы (Мат.+Ком.)", f"{total_expenses:,.0f} ₸".replace(",", " "), delta_color="inverse")
     profit_color = "normal" if net_profit >= 0 else "inverse"
-    m3.metric("💰 Прибыль", f"{net_profit:,.0f} ₸".replace(",", " "), delta_color=profit_color)
+    r1_c3.metric("💰 Чистая Прибыль", f"{net_profit:,.0f} ₸".replace(",", " "), delta_color=profit_color)
     
-    m4.metric("📈 Накрутка", f"{markup:.1f}x")
-    
+    # Row 2: Markups
+    r2_c1, r2_c2, r2_c3 = st.columns(3)
+    r2_c1.metric("📈 Накрутка (Gross)", f"{gross_markup:.1f}x", help="Цена / Себестоимость материалов")
+    r2_c2.metric("📉 Накрутка (Net)", f"{net_markup:.1f}x", help="Цена / (Себестоимость + Комиссии)")
+    r2_c3.caption(f"Комиссии: **{commission_cost:,.0f} ₸** ({total_commission_pct}%)")
+
     if net_profit < 0:
-        st.error(f"УБЫТОК!  {net_profit:,.0f} ₸".replace(",", " "))
+        st.error(f"⚠️ УБЫТОК: {net_profit:,.0f} ₸")
     
     # Chart
     fig = go.Figure()
     
     fig.add_trace(go.Bar(
         name='Себестоимость',
-        x=['Структура Цены'],
+        x=['Структура'],
         y=[total_material_cost],
-        marker_color='rgb(55, 83, 109)'
+        marker_color='rgb(55, 83, 109)',
+        text=[f"{total_material_cost:,.0f}"],
+        textposition='auto'
     ))
     
     fig.add_trace(go.Bar(
         name='Комиссии',
-        x=['Структура Цены'],
+        x=['Структура'],
         y=[commission_cost],
-        marker_color='rgb(255, 160, 122)'  # Light Salmon
+        marker_color='rgb(255, 160, 122)',
+        text=[f"{commission_cost:,.0f}"],
+        textposition='auto'
     ))
     
     if net_profit > 0:
         fig.add_trace(go.Bar(
             name='Прибыль',
-            x=['Структура Цены'],
+            x=['Структура'],
             y=[net_profit],
-            marker_color='rgb(60, 179, 113)'  # Medium Sea Green
+            marker_color='rgb(60, 179, 113)',
+            text=[f"{net_profit:,.0f}"],
+            textposition='auto'
         ))
     
     fig.update_layout(
